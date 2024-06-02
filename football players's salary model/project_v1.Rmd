@@ -1,0 +1,570 @@
+---
+title: "足球运动员合理薪资估值模型"
+author: "邹俊哲&谢世清“
+date: "2024-05-30"
+output: html_document
+---
+
+加载需要的库
+
+```{r}
+library(ggplot2)
+library(corrplot)
+library(nortest)
+library(MASS)
+library(robustbase)
+```
+
+# 基本数据
+
+```{r}
+datas <- read.csv("/Users/zoujunzhe/desktop/rproject/wages_1.csv") #导入数据
+
+datas <- as.data.frame(datas)
+
+head(datas) #数据大致情况
+```
+
+数据来源：<https://kaggle.com/datasets/ultimus/football-salaries-dataset>
+
+数据概况：这些工资数据是截止到2023-2024赛季夏季转会窗口期的球员数据。所有的数据都是从足球经理2024（Football Manager 2024）这款游戏中提取出来的，包含了40,791名球员的转会数据。
+
+### 列名解释：
+
+**"Is_top_5_League"**:将球员所属联赛分为两类，一类是五大联赛，包括有 'Premier League', 'LALIGA EA SPORTS', 'Ligue 1 Uber Eats', 'Serie A TIM', 'Bundesliga'；另一类是非五大联赛球员。两类分别标记为1、0。用于探究可能存在的联赛低位对球员薪资的影响。
+
+**"Based_rich_nation"**:联赛所在地为以下国家的联赛定义为rich nation（标记为1）："England","China","Germany","Spain","France","Italy","United States","Qatar","U.A.E.","Saudi Arabia"。用于探究可能存在的国家富裕程度导致的球员薪资影响。
+
+**"Is_top_ranked_nation"**:将各个国家的足球水平分级为三档，第一档为tier 1（标记为2）， 第二档为tier 2（标记为1），其他的国家为第三梯队（标记为0）。用以探究联赛所在国世界排名可能导致的球员薪资影响。
+
+**"EU_National"**:看是否是欧洲国家对球员薪资的影响。是欧洲国家标记为1，不是欧洲国家标记为0。
+
+**"Caps"**:caps列的数字代表该球员为国家队的效力场数。
+
+**"Apps"**:apps列的数字代表该球员的总场次。
+
+**"Age"**:球员年龄。
+
+**"Reputation"**:球员的名声，由原始数据中的CR列生成。
+
+**"Is_top_prev_club"**:当球员之前所效力的俱乐部为以下顶尖俱乐部时，标记为1，top_clubs = ['Real Madrid', 'Bayern München', 'Barcelona', 'Man City', 'Juventus', 'Chelsea', 'Atlético de Madrid', 'Liverpool', 'Paris Saint-Germain', 'Sevilla', 'Man Utd', 'Dortmund', 'Porto', 'Arsenal', 'Benfica', 'Ajax', 'Roma', 'Napoli', 'Tottenham', 'Shakhtar']。其余俱乐部标记为0。用于探究原始俱乐部排名对球员薪资的影响。
+
+**"Salary"**:球员的当前薪资
+
+### 对数据的第一手分析
+
+```{r}
+summary(datas)
+```
+
+从整体来看，Salary的极差非常大，而且呈现极值远远偏离中位数的情况，导致平均值也远大于中位数。
+
+所以，目测来看具有这个特征的指标还有Caps，也就是为国家队效力的场次数，Is_top_5_league也就是是否是五大联赛的俱乐部，以及Is_top_prev_club也就是是否之前在顶尖俱乐部效力。
+
+这些数据都有可能与Salary产生一定的正向联系以供研究。
+
+**各列的补充了解**
+
+1.  球员的薪资分布
+
+```{r}
+summary(datas$Salary)
+```
+
+该数据的离散程度指标（未标准化）
+
+```{r}
+sd(datas$Salary) #薪资的标准差
+IQR(datas$Salary) #薪资的四分位距
+```
+
+可视化该数据
+
+```{r}
+hist(datas$Salary, col = "lightblue") #绘制工资的直方图
+boxplot(datas$Salary) #绘制工资的箱线图
+qqnorm(datas$Salary)#绘制工资的正态分布qq图，检验其正态分布性
+```
+
+可以看出只有极少数的球员有较高的薪资，大部分其他球员的薪资基本上处于同一区间。
+
+现在尝试**去除这些异常高薪资的球员**来尝试观察剩下球员的薪资情况：
+
+```{r}
+# 利用四分位距去除异常值
+
+q1_salary <- quantile(datas$Salary, 0.25)
+q3_salary <- quantile(datas$Salary, 0.75)
+
+iqr_salary <- q3_salary - q1_salary
+
+main_salary_data <- datas$Salary[datas$Salary > q1_salary - 1.5 * iqr_salary & datas$Salary < q3_salary + 1.5 * iqr_salary] #利用四分位距去除了低于1/4分位点1.5倍iqr_salary的数据和高于3/4分位点1.5倍iqr_salary的数据
+
+summary(main_salary_data)
+```
+
+```{r}
+hist(main_salary_data, col = "lightblue")
+boxplot(main_salary_data)
+qqnorm(main_salary_data)
+```
+
+得到的球员薪资差异仍然非常巨大。
+
+2.  其他数据的一些直观表示
+
+```{r}
+#五大联赛数据
+hist(datas$Is_top_5_League, col = "lightblue")
+```
+
+```{r}
+#相对富裕的国家数据
+hist(datas$Based_rich_nation, col = "lightblue")
+```
+
+```{r}
+#国家世界排名数据
+hist(datas$Is_top_ranked_nation, col = "lightblue")
+```
+
+```{r}
+#是否欧洲籍数据
+hist(datas$EU_National, col = "lightblue")
+```
+
+```{r}
+#年龄数据
+hist(datas$Age, col = "lightblue")
+```
+
+```{r}
+#名声数据
+hist(datas$Reputation, col = "lightblue")
+```
+
+```{r}
+#之前俱乐部是否顶级数据
+hist(datas$Is_top_prev_club, col = "lightblue")
+```
+
+
+# 球员薪资～其他变量拟合模型
+
+### 数据预处理
+
+**相关系数矩阵**
+
+```{r}
+
+R_0 <- cor(datas)
+
+corrplot(R_0)
+```
+
+**Apps**&**Age**的相关系数为0.784。
+
+分别代表着**球员总场次**和**球员年龄**，有着合理的解释：球员年龄越大，所比赛的场次越多。所以二者具有较强的线性相关关系。
+
+Cor(Apps,Salary) = 0.144
+
+Cor(Age,Salary) = 0.071
+
+选择去除掉相关性较弱的**Age**参数以缓解多重共线性。
+
+值得注意的是：**Age**年龄参数和**Caps**代表国家队场次并没有太强的线性相关性，说明国家队的场次在一定程度上代表了该足球运动员的水平。
+
+```{r}
+#去除Age参数以缓解多重共线性
+
+datas <- datas[,-7]
+```
+
+**条件数Kappa检验新数据**
+
+```{r}
+#检验新的相关系数矩阵
+datas_mat <- as.matrix(datas)
+```
+
+```{r}
+#kappa
+X <- datas_mat[,-10]
+kap1 <- kappa(t(X) %*% X)
+print(paste(c("数据的kappa值为：",kap1)))
+```
+
+## salary 的分析
+
+```{r}
+attach(datas)
+
+plot(Salary)
+
+plot(log(Salary))
+
+hist(log(Salary))
+
+qqnorm(log(Salary))
+qqline(log(Salary))
+
+```
+
+```{r}
+R_1 <- cor(log(Salary),datas)
+corrplot(R_1)
+```
+
+将部分变量转变回定性变量
+
+```{r}
+
+datas$Is_top_5_League <- factor(datas$Is_top_5_League, levels = c(1,0) , labels = c("Is_top_5_League","Not_top_5_League")) #将是否在五大联赛变为定性变量
+
+datas$Based_rich_nation <- factor(datas$Based_rich_nation, levels = c(1,0), labels = c("Is_rich_nation","Not_rich_nation")) #将是否在相对富裕国家变为定性变量
+
+datas$Is_top_ranked_nation <- factor(datas$Is_top_ranked_nation, levels = c(0,1,2), labels = c("Tier_3","Tier_2","Tier_1")) #将所在国家世界排名所属梯队变为定性变量
+
+datas$EU_National <- factor(datas$EU_National, levels = c(0,1), labels = c("Not_EU_National","Is_EU_National")) #将是否是欧洲籍转变为定性变量
+
+datas$Is_top_prev_club <- factor(datas$Is_top_prev_club, levels = c(0,1), labels = c("Not_top_prev_club","Is_top_prev_club")) #将前一家效力的俱乐部是否顶级转变为定性变量
+
+```
+
+将工资转变成对数工资
+
+```{r}
+datas$Salary <-log(Salary)
+names(datas)[names(datas) == "Salary"] <- "logSalary"
+```
+
+将工资和自变量先分离
+
+其中自变量中的定量变量和定性变量也分离
+
+```{r}
+# 定量变量矩阵
+var_df1 <- data.frame(Caps = datas$Caps, Apps = datas$Apps, Reputation = datas$Reputation)
+head(var_df1)
+
+# 定性变量矩阵
+var_df2 <- data.frame(Is_top_5_League = datas$Is_top_5_League, Based_rich_nation = datas$Based_rich_nation,
+                       Is_top_ranked_nation = datas$Is_top_ranked_nation, EU_National = datas$EU_National,
+                       Is_top_prev_club = datas$Is_top_prev_club)
+head(var_df2)
+
+```
+
+尝试构建回归模型
+
+```{r}
+# 构建线性回归模型
+model1 <- lm(logSalary ~ Caps + Apps + Reputation + Is_top_5_League + Based_rich_nation + 
+              Is_top_ranked_nation + EU_National + Is_top_prev_club + Age, data = datas)
+
+#查看模型
+summary(model1)
+```
+
+系数（Coefficients）
+
+```         
+•   (Intercept): 6.238e+00，表明当所有自变量都为零时的对数工资。
+
+•   Caps: 5.232e-03，表明每增加一个Caps，工资的对数增加0.00523。
+
+•   Apps: 1.277e-03，表明每增加一个Apps，工资的对数增加0.00127。
+
+•   Reputation: 1.139e-03，表明每增加一个Reputation，工资的对数增加0.00114。
+
+•   Is_top_5_LeagueNot_top_5_League: -5.161e-01，表明不在五大联赛中时，工资的对数减少0.5161。
+
+•   Based_rich_nationNot_rich_nation: -5.660e-01，表明不在富裕国家时，工资的对数减少0.5660。
+
+•   Is_top_ranked_nationTier_2: 3.143e-01，表明在世界排名第2梯队国家时，工资的对数增加0.3143。
+
+•   Is_top_ranked_nationTier_1: 9.229e-02，表明在世界排名第1梯队国家时，工资的对数增加0.0923。
+
+•   EU_NationalIs_EU_National: -2.652e-01，**表明是欧洲籍时，工资的对数减少0.2652**。
+
+•   Is_top_prev_clubIs_top_prev_club: 3.898e-01，表明前一家效力的俱乐部是顶级俱乐部时，工资的对数增加0.3898。
+```
+
+统计显著性
+
+所有变量的p值都非常低（\< 2e-16），这表明这些变量对工资的影响在统计上是显著的。
+
+模型拟合度
+
+```         
+•   Residual standard error: 0.8884，残差标准误差，衡量模型预测的精度。
+
+•   Multiple R-squared: 0.7427，表示模型解释了约74.27%的工资变异。
+
+•   Adjusted R-squared: 0.7426，调整后的R平方，考虑了自变量数量对模型复杂度的影响。
+
+•   F-statistic: 1.308e+04，模型总体显著性检验，p值非常小（< 2.2e-16），表明模型整体上是显著的。
+```
+
+总结
+
+```         
+•   模型显示所有自变量对对数工资的影响都是显著的。
+
+•   自变量中的定量变量（Caps、Apps、Reputation）和定性变量（Is_top_5_League、Based_rich_nation、Is_top_ranked_nation、EU_National、Is_top_prev_club）都对工资有显著的影响。
+
+•   模型的R平方值为0.7427，说明自变量能够解释约74.27%的工资变异，模型拟合度较高。
+```
+
+**可视化分析**
+
+```{r}
+# 预测值
+predicted_values <- predict(model1)
+```
+
+```{r}
+# 残差
+residuals <- resid(model1)
+```
+
+```{r}
+# 1. 残差图
+ggplot(data = datas, aes(x = predicted_values, y = residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, col = "red", linetype = "dashed") + #添加一条水平参考线，y轴截距为0，颜色为红色，线型为虚线。这条线表示残差的零水平。
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted values",
+       y = "Residuals") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 2. 实际值与预测值对比图
+ggplot(data = datas, aes(x = predicted_values, y = logSalary)) +
+    geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, col = "red", linetype = "dashed") + #添加一条斜率为1的对角线，表示理想情况下的预测，颜色为红色，线型为虚线。
+  labs(title = "Actual vs Predicted",
+       x = "Predicted log(Salary)",
+       y = "Actual log(Salary)") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 3. 残差直方图
+ggplot(data = datas, aes(x = residuals)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  labs(title = "Histogram of Residuals",
+       x = "Residuals",
+       y = "Frequency") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 绘制箱线图识别异常值
+boxplot(model1$residuals, main = "Residuals Boxplot")
+
+qqnorm(residuals)
+qqline(residuals)
+```
+
+```{r}
+#检验残差的正态性
+
+# 随机抽取子集
+sample_data_1 <- sample(residuals, 5000)
+
+# 进行 Shapiro-Wilk 检验
+shapiro_test_1 <- shapiro.test(sample_data_1)
+
+print(shapiro_test_1)
+```
+
+```{r}
+
+# 使用 Anderson-Darling 检验
+ad_test_1 <- ad.test(sample_data_1)
+
+print(ad_test_1)
+```
+**去除异常值办法**
+
+```{r}
+# 绘制残差的箱线图
+boxplot(model1$residuals, main = "Residuals Boxplot")
+
+# 确定异常值的上下限
+m1Q1 <- quantile(model1$residuals, 0.25)
+m1Q3 <- quantile(model1$residuals, 0.75)
+m1IQR <- m1Q3 - m1Q1
+m1lower_bound <- m1Q1 - 1.5 * m1IQR
+m1upper_bound <- m1Q3 + 1.5 * m1IQR
+
+# 标记和移除异常值
+m1outliers <- which(model1$residuals < m1lower_bound | model1$residuals > m1upper_bound)
+m1cleaned_data <- datas[-m1outliers, ]
+
+# 重新拟合模型
+m1model_cleaned <- lm(logSalary ~ Caps + Apps + Reputation + Is_top_5_League + Based_rich_nation + 
+                    Is_top_ranked_nation + EU_National + Is_top_prev_club + Age, data = m1cleaned_data)
+summary(m1model_cleaned)
+
+```
+
+```{r}
+# 预测值
+predicted_values_c <- predict(m1model_cleaned)
+```
+
+```{r}
+# 残差
+residuals_c <- resid(m1model_cleaned)
+```
+
+```{r}
+# 1. 残差图
+ggplot(data = m1cleaned_data, aes(x = predicted_values_c, y = residuals_c)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, col = "red", linetype = "dashed") +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted values",
+       y = "Residuals") +
+  theme_minimal()
+
+# 2. 实际值与预测值对比图
+ggplot(data = m1cleaned_data, aes(x = predicted_values_c, y = logSalary)) +
+    geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, col = "red", linetype = "dashed") + #添加一条斜率为1的对角线，表示理想情况下的预测，颜色为红色，线型为虚线。
+  labs(title = "Actual vs Predicted",
+       x = "Predicted log(Salary)",
+       y = "Actual log(Salary)") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 3. 残差直方图
+ggplot(data = m1cleaned_data, aes(x = residuals_c)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  labs(title = "Histogram of Residuals",
+       x = "Residuals",
+       y = "Frequency") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 绘制箱线图识别异常值
+boxplot(m1model_cleaned$residuals, main = "Residuals Boxplot")
+
+qqnorm(residuals_c)
+qqline(residuals_c)
+```
+
+```{r}
+#检验残差的正态性
+
+# 随机抽取子集
+sample_data_c <- sample(residuals_c, 5000)
+
+# 进行 Shapiro-Wilk 检验
+shapiro_test_c <- shapiro.test(sample_data_c)
+
+print(shapiro_test_c)
+```
+
+```{r}
+
+# 使用 Anderson-Darling 检验
+ad_test_c <- ad.test(sample_data_c)
+
+print(ad_test_c)
+```
+
+
+**变换**
+
+```{r}
+# Box-Cox 变换
+bc <- boxcox(model1, plotit = FALSE)
+lambda <- bc$x[which.max(bc$y)]
+datas$transformed_response <- (datas$logSalary^lambda - 1) / lambda
+
+# 使用变换后的响应变量重新拟合模型
+model2 <- lm(transformed_response ~ Caps + Apps + Reputation + Is_top_5_League + Based_rich_nation + 
+             Is_top_ranked_nation + EU_National + Is_top_prev_club + Age, data = datas)
+summary(model2)
+```
+
+Box-Cox变换
+
+```{r}
+# 预测值
+predicted_values_2 <- predict(model2)
+```
+
+```{r}
+# 残差
+residuals_2 <- resid(model2)
+```
+
+```{r}
+# 1. 残差图
+ggplot(data = datas, aes(x = predicted_values_2, y = residuals_2)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, col = "red", linetype = "dashed") + #添加一条水平参考线，y轴截距为0，颜色为红色，线型为虚线。这条线表示残差的零水平。
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted values",
+       y = "Residuals") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 2. 实际值与预测值对比图
+ggplot(data = datas, aes(x = predicted_values_2, y = transformed_response)) +
+    geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, col = "red", linetype = "dashed") + #添加一条斜率为1的对角线，表示理想情况下的预测，颜色为红色，线型为虚线。
+  labs(title = "Actual vs Predicted",
+       x = "Predicted transformed_response",
+       y = "Actual transformed_response") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 3. 残差直方图
+ggplot(data = datas, aes(x = residuals_2)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  labs(title = "Histogram of Residuals_2",
+       x = "Residuals_2",
+       y = "Frequency") +
+  theme_minimal() #应用最小化的主题风格，使图表看起来简洁。
+
+# 绘制箱线图识别异常值
+boxplot(model1$residuals, main = "Residuals Boxplot")
+```
+
+```{r}
+#检验残差的正态性
+
+# 随机抽取子集
+sample_data_2 <- sample(residuals_2, 5000)
+
+# 进行 Shapiro-Wilk 检验
+shapiro_test_2 <- shapiro.test(sample_data_2)
+
+print(shapiro_test_2)
+```
+
+```{r}
+
+# 使用 Anderson-Darling 检验
+ad_test_2 <- ad.test(sample_data_2)
+
+print(ad_test_2)
+```
+
+**难以通过变化解决残差的非正态问题**
+
+鲁棒回归解决异常值
+
+```{r}
+# 使用鲁棒回归
+model_robust <- lmrob(logSalary ~ Caps + Apps + Reputation + Is_top_5_League + Based_rich_nation + 
+                      Is_top_ranked_nation + EU_National + Is_top_prev_club + Age, data = datas)
+summary(model_robust)
+```
+
+```{r}
+# 绘制残差图
+plot(model_robust$fitted.values, model_robust$residuals)
+abline(h = 0, col = "red")
+
+# 绘制 Q-Q 图
+qqnorm(model_robust$residuals)
+qqline(model_robust$residuals, col = "red")
+
+```
